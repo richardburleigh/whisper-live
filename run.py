@@ -8,6 +8,45 @@ import wave
 import webrtcvad
 from halo import Halo
 from scipy import signal
+from datetime import datetime
+import time
+import os
+import mutagen
+from mutagen.wave import WAVE
+
+
+import ray
+
+ray.init()
+
+@ray.remote
+class MyModel():
+
+    def __init__(self):
+        # load the model once in the constructor
+        print("Loading")
+        self.model = whisper.load_model("small",device="cpu")
+
+    def run(self, i):
+        # ...
+        # code to perform prediction using self.predictor_fn
+        # ...
+        translate_options = {"task" : "translate"}
+        translate_options["language"] = "Korean"
+        translate_options["fp16"] = False
+        start_time = time.time()
+        self.text = self.model.transcribe(f"tmp{i}.wav", **translate_options)["text"]
+        elapsed_time = time.time() - start_time
+        source = WAVE(f"tmp{i}.wav")
+        print("Source duration: ", source.info.length)
+        print("Processing time: ", elapsed_time)
+        os.remove(f"tmp{i}.wav")
+        #print(self.text)
+        return self.text
+
+    def get(self):
+        return self.text
+
 
 logging.basicConfig(level=20)
 
@@ -36,11 +75,22 @@ class Audio(object):
         self.block_size_input = int(self.input_rate / float(self.BLOCKS_PER_SECOND))
         self.pa = pyaudio.PyAudio()
 
+        info = self.pa.get_host_api_info_by_index(0)
+        numdevices = info.get('deviceCount')
+
+        for i in range(0, numdevices):
+            if (self.pa.get_device_info_by_host_api_device_index(0, i).get('maxInputChannels')) > 0:
+                print("Input Device id ", i, " - ", self.pa.get_device_info_by_host_api_device_index(0, i).get('name'))
+
+        input_id = input("Which input device? ")
+        #self.pa.input_device_index=int(input_id)
+
         kwargs = {
             'format': self.FORMAT,
             'channels': self.CHANNELS,
             'rate': self.input_rate,
             'input': True,
+            'input_device_index': int(input_id),
             'frames_per_buffer': self.block_size_input,
             'stream_callback': proxy_callback,
         }
@@ -153,8 +203,8 @@ class VADAudio(Audio):
 
 def main(ARGS):
     # Load model
-    print("Loading model..")
-    model = whisper.load_model("tiny")
+    #print("Loading model..")
+    #model = whisper.load_model("tiny",device="cpu")
 
     # Start audio with VAD
     vad_audio = VADAudio(aggressiveness=ARGS.vad_aggressiveness,
@@ -169,12 +219,31 @@ def main(ARGS):
 
     print("Listening (ctrl-C to exit)...")
     frames = vad_audio.vad_collector()
-
+    text = ""
+    remoteModel = MyModel.remote()
+    remoteModel1 = MyModel.remote()
+    remoteModel2 = MyModel.remote()
+    remoteModel3 = MyModel.remote()
     spinner = None
     if not ARGS.nospinner:
         spinner = Halo(spinner='line')
     wav_data = bytearray()
+    result = None
+    running = []
+    ready_ids = []
+    displayed = []
+    n = 0
+    p = 0
+
+
+
+
     for frame in frames:
+        ready_ids, _remaining_ids = ray.wait(running,timeout=0)
+        if len(running) > 0:
+            if running[0] in ready_ids:
+                print(ray.get(running[0]))
+                running.remove(running[0])
         if frame is not None:
             if spinner: spinner.start()
             logging.debug("streaming frame")
@@ -182,10 +251,29 @@ def main(ARGS):
         else:
             if spinner: spinner.stop()
             logging.debug("end utterence")
-            vad_audio.write_wav("tmp.wav", wav_data)
+            vad_audio.write_wav(f"tmp{str(n)}.wav", wav_data)
             wav_data = bytearray()
-            text = model.transcribe("tmp.wav", **translate_options)["text"]
-            print("Recognized: %s" % text)
+            #print("Start: ",datetime.now())
+
+            #text = model.transcribe("tmp.wav", **translate_options)["text"]
+            if p == 0:
+                running.append(remoteModel.run.remote(n))
+                p = p + 1
+            elif p == 1:
+                running.append(remoteModel1.run.remote(n))
+                p = p + 1
+            elif p == 2:
+                running.append(remoteModel2.run.remote(n))
+                p = p + 1
+            else:
+                running.append(remoteModel3.run.remote(n))
+                p = 0
+
+
+            n = n + 1
+            #print("End: ",datetime.now())
+            #print(result)
+            #print("Recognized: %s" % result)
 
 if __name__ == '__main__':
     DEFAULT_SAMPLE_RATE = 16000
@@ -193,7 +281,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="Stream from microphone to DeepSpeech using VAD")
 
-    parser.add_argument('-v', '--vad_aggressiveness', type=int, default=0,
+    parser.add_argument('-v', '--vad_aggressiveness', type=int, default=2,
                         help="Set aggressiveness of VAD: an integer between 0 and 3, 0 being the least aggressive about filtering out non-speech, 3 the most aggressive. Default: 3")
     parser.add_argument('--nospinner', action='store_true',
                         help="Disable spinner")
