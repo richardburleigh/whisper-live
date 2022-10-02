@@ -19,13 +19,13 @@ import ray
 
 ray.init()
 
-@ray.remote
+@ray.remote(num_gpus=1)
 class MyModel():
 
     def __init__(self):
         # load the model once in the constructor
-        print("Loading")
-        self.model = whisper.load_model("small",device="cpu")
+        self.model = whisper.load_model("large")
+        print("Loaded model on device: ", self.model.device)
 
     def run(self, i):
         # ...
@@ -33,19 +33,32 @@ class MyModel():
         # ...
         translate_options = {"task" : "translate"}
         translate_options["language"] = "Korean"
-        translate_options["fp16"] = False
+        #translate_options["fp16"] = False
         start_time = time.time()
-        self.text = self.model.transcribe(f"tmp{i}.wav", **translate_options)["text"]
+        try:
+          self.text = self.model.transcribe(f"tmp{i}.wav", **translate_options)["text"]
+        except Exception as e:
+          print(e)
         elapsed_time = time.time() - start_time
         source = WAVE(f"tmp{i}.wav")
-        print("Source duration: ", source.info.length)
-        print("Processing time: ", elapsed_time)
+        #print("Source duration: ", source.info.length)
+        #print("Processing time: ", elapsed_time)
         os.remove(f"tmp{i}.wav")
-        #print(self.text)
+        print(self.text)
         return self.text
 
     def get(self):
         return self.text
+
+
+@ray.remote
+def getValues(running):
+   while True:
+        ready_ids, _remaining_ids = ray.wait(running,timeout=0)
+        if len(running) > 0:
+            if running[0] in ready_ids:
+                print(ray.get(running[0]))
+                running.remove(running[0])
 
 
 logging.basicConfig(level=20)
@@ -220,10 +233,8 @@ def main(ARGS):
     print("Listening (ctrl-C to exit)...")
     frames = vad_audio.vad_collector()
     text = ""
-    remoteModel = MyModel.remote()
-    remoteModel1 = MyModel.remote()
-    remoteModel2 = MyModel.remote()
-    remoteModel3 = MyModel.remote()
+    for x in range(0, ARGS.threads):
+      globals()[f"remoteModel{x}"] = MyModel.remote()
     spinner = None
     if not ARGS.nospinner:
         spinner = Halo(spinner='line')
@@ -239,7 +250,9 @@ def main(ARGS):
 
 
     for frame in frames:
+    
         ready_ids, _remaining_ids = ray.wait(running,timeout=0)
+        #print(ray.wait(running,timeout=0))
         if len(running) > 0:
             if running[0] in ready_ids:
                 print(ray.get(running[0]))
@@ -256,18 +269,11 @@ def main(ARGS):
             #print("Start: ",datetime.now())
 
             #text = model.transcribe("tmp.wav", **translate_options)["text"]
-            if p == 0:
-                running.append(remoteModel.run.remote(n))
-                p = p + 1
-            elif p == 1:
-                running.append(remoteModel1.run.remote(n))
-                p = p + 1
-            elif p == 2:
-                running.append(remoteModel2.run.remote(n))
-                p = p + 1
-            else:
-                running.append(remoteModel3.run.remote(n))
-                p = 0
+            running.append(globals()[f"remoteModel{p}"].run.remote(n))
+            
+            p = p + 1
+            if p > ARGS.threads -1:
+              p = 0
 
 
             n = n + 1
@@ -281,18 +287,20 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="Stream from microphone to DeepSpeech using VAD")
 
-    parser.add_argument('-v', '--vad_aggressiveness', type=int, default=2,
+    parser.add_argument('-v', '--vad_aggressiveness', type=int, default=3,
                         help="Set aggressiveness of VAD: an integer between 0 and 3, 0 being the least aggressive about filtering out non-speech, 3 the most aggressive. Default: 3")
     parser.add_argument('--nospinner', action='store_true',
                         help="Disable spinner")
     parser.add_argument('-s', '--scorer',
                         help="Path to the external scorer file.")
-    parser.add_argument('-l', '--language',
+    parser.add_argument('-l', '--language', default='Korean',
                         help="Destination language.")
     parser.add_argument('-d', '--device', type=int, default=None,
                         help="Device input index (Int) as listed by pyaudio.PyAudio.get_device_info_by_index(). If not provided, falls back to PyAudio.get_default_device().")
     parser.add_argument('-r', '--rate', type=int, default=DEFAULT_SAMPLE_RATE,
                         help=f"Input device sample rate. Default: {DEFAULT_SAMPLE_RATE}. Your device may require 44100.")
+    parser.add_argument('-t', '--threads', type=int, default=1,
+                        help=f"Number of whisper threads.")
 
     ARGS = parser.parse_args()
     main(ARGS)
