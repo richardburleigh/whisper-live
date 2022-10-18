@@ -13,8 +13,11 @@ duration = 30 # Record 30 seconds of audio before processing with Whisper
 modelsize = "large"
 showQueue = False
 
-
 libname = "libwhisper.so"
+
+if not os.path.exists(libname):
+    print("Unable to find ", libname, ". Please build it as per https://github.com/ggerganov/whisper.cpp/issues/9#issuecomment-1272555209")
+    exit()
 
 ray.init()
 
