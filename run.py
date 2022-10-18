@@ -26,7 +26,7 @@ except:
     print("Temp directory already exists.")
 
 @ray.remote
-class MyModel():
+class Whisper():
 
     def __init__(self):
 
@@ -116,13 +116,9 @@ running = []
 eady_ids = []
 displayed = []
 n = 0
-p = 0
-threads = 1
 
-for x in range(0, threads):
-  globals()[f"remoteModel{x}"] = MyModel.remote()
+remoteModel = Whisper.remote()
 
-spinner = None
 spinner = Halo(spinner='line')
 data = None
 spinner.start()
@@ -141,8 +137,8 @@ try:
         else:
             data = data + region
         if data.duration > duration:
-            data.save(os.path.join(tmpdir,f"tmp{n}.wav")) # progress bar requires `tqdm`
-            running.append(globals()[f"remoteModel{p}"].run.remote(n, time.strftime("%X")))
+            data.save(os.path.join(tmpdir,f"tmp{n}.wav"))
+            running.append(remoteModel.run.remote(n, time.strftime("%X")))
             if showQueue:
                print("Queue: ", len(_remaining_ids), " Ready: ", len(ready_ids))
             data = None
